@@ -23,7 +23,6 @@ class PlaceScraper(object):
             try:
                 raw_frame = self.ws.recv_frame()
                 frame = json.loads(raw_frame.data.decode('utf-8'))
-                print(frame)
 
                 if frame['type'] == 'place':
                     self.handle_place(frame)
@@ -31,6 +30,8 @@ class PlaceScraper(object):
                     self.handle_activity(frame)
                 elif frame['type'] == 'batch-place':
                     self.handle_batch_place(frame)
+                elif frame['type'] == 'new_comment':
+                    self.handle_new_comment(frame)
                 else:
                     print('Unknown frame type: {}'.format(frame['type']))
             except WebSocketConnectionClosedException:
@@ -46,7 +47,6 @@ class PlaceScraper(object):
 
     def read_websocket_forever(self):
         self.ws_init()
-
         while True:
             try:
                 raw_frame = self.ws.recv_frame()
@@ -86,6 +86,14 @@ class PlaceScraper(object):
             recieved_on INTEGER,
             data BLOB
         )''')
+        self.c.execute(
+        '''CREATE TABLE IF NOT EXISTS new_comment(
+            recieved_on INTEGER,
+            body TEXT,
+            author TEXT
+        )
+        '''
+        )
         self.c.execute('CREATE INDEX IF NOT EXISTS placements_recieved_on_idx ON placements (recieved_on)')
         self.c.execute('CREATE INDEX IF NOT EXISTS placements_author_idx ON placements (author)')
         self.c.execute('CREATE INDEX IF NOT EXISTS placements_color_idx ON placements (color)')
@@ -107,12 +115,12 @@ class PlaceScraper(object):
         while match is None:
             # Forgive me, for I am a sinner
             resp = requests.get('https://reddit.com/r/place')
-            url_re = re.compile(r'"place_websocket_url": "([^"]+)"')
+            #url_re = re.compile(r'"place_websocket_url": "([^"]+)"')
+            url_re = re.compile(r'"liveCommentsWebsocket":\"([^"]+)\"')
             matches = re.findall(url_re, resp.content.decode('utf-8'))
 
             if len(matches) > 0:
                 match = matches[0]
-
         return match
 
     def commit_queue_check(self):
@@ -150,6 +158,14 @@ class PlaceScraper(object):
         for x in frame['payload']:
             self.handle_place(x)
 
+    def handle_new_comment(self, frame):
+        self.c.execute('INSERT INTO new_comment VALUES (?, ?, ?)', [
+            int(time.time()),
+            frame['payload']['body'],
+            frame['payload']['author']
+        ])
+        self.insert_queue_size += 1
+        self.commit_queue_check()
 
 def main():
     scraper = PlaceScraper()
